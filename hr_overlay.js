@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Hallenradsport Overlay
 // @namespace    hallenradsport-overlay
-// @version      1.6
+// @version      1.7
 // @description  Zeigt Live-Ergebnisse von hallenradsport-daum.de als flexibles Overlay (mit Autosize, Fullscreen-Fix & persistenter Auswahl)
 // @author       you
 // @match        *://sporteurope.tv/*
+// @downloadURL  https://raw.githubusercontent.com/soulseek2x-gif/tampermonkey-scripts/main/hr_overlay.js
+// @updateURL    https://raw.githubusercontent.com/soulseek2x-gif/tampermonkey-scripts/main/hr_overlay.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @connect      hallenradsport-daum.de
