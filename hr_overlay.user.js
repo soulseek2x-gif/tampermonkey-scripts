@@ -1,12 +1,12 @@
 // ==UserScript==
-// @name         Hallenradsport Overlay
+// @name         Hallenradsport Overlay tester
 // @namespace    hallenradsport-overlay
-// @version      1.7
+// @version      1.8
 // @description  Zeigt Live-Ergebnisse von hallenradsport-daum.de als flexibles Overlay (mit Autosize, Fullscreen-Fix & persistenter Auswahl)
 // @author       you
 // @match        *://sporteurope.tv/*
-// @downloadURL  https://raw.githubusercontent.com/soulseek2x-gif/tampermonkey-scripts/main/hr_overlay.js
-// @updateURL    https://raw.githubusercontent.com/soulseek2x-gif/tampermonkey-scripts/main/hr_overlay.js
+// @downloadURL  https://raw.githubusercontent.com/soulseek2x-gif/tampermonkey-scripts/main/hr_overlay.user.js
+// @updateURL    https://raw.githubusercontent.com/soulseek2x-gif/tampermonkey-scripts/main/hr_overlay.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @connect      hallenradsport-daum.de
@@ -414,6 +414,15 @@
         return seedMap;
     }
 
+    function getLatestStarterVisibleCount(rows, finisherSeedMap, manualCount) {
+        if (!rankColoringEnabled || highlightedSeedCount < 1) return manualCount;
+
+        const latestStarterIndex = rows.findIndex(r => finisherSeedMap.get(`${r.starter}|${r.eing}`) === 1);
+        if (latestStarterIndex === -1) return manualCount;
+
+        return Math.max(manualCount, latestStarterIndex + 1);
+    }
+
     function getSeedColor(seed) {
         const palette = [
             '#ff8a80',
@@ -546,13 +555,18 @@
 
     function render(ui, tables) {
         const i = parseInt(ui.selTable.value || '0', 10);
-        const c = parseInt(ui.selCount.value || '3', 10);
         const t = tables[i];
         if (!t) return (ui.content.textContent = 'Keine Tabelle gefunden.');
 
-        const rows = t.rows.slice(0, c);
         const upcomingStarter = getUpcomingStarter(t.rows);
         const finisherSeedMap = getFinisherSeedMap(t.rows);
+        const manualCount = Math.max(1, parseInt(selection.countValue || '3', 10) || 3);
+        const visibleCount = getLatestStarterVisibleCount(t.rows, finisherSeedMap, manualCount);
+        const rows = t.rows.slice(0, visibleCount);
+
+        if (ui.selCount.value !== String(visibleCount)) {
+            ui.selCount.value = String(visibleCount);
+        }
 
         // Determine longest starter and points strings
         const fallbackStarterName = 'nicht verfuegbar';
