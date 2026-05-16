@@ -1,0 +1,207 @@
+// ==UserScript==
+// @name         YouTube Draggable Countdown Timer
+// @namespace    http://tampermonkey.net/
+// @version      1.1
+// @description  Draggable countdown timer overlay for YouTube
+// @match        https://www.youtube.com/*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ===== SETTINGS =====
+    const DEFAULT_MINUTES = 6;
+
+    // ===== STATE =====
+    let totalSeconds = DEFAULT_MINUTES * 60;
+    let remainingSeconds = totalSeconds;
+    let running = false;
+    let interval = null;
+
+    // ===== CREATE OVERLAY =====
+    const overlay = document.createElement('div');
+    overlay.id = 'yt-timer-overlay';
+
+    const timeEl = document.createElement('div');
+    timeEl.id = 'yt-timer-time';
+
+    const buttonContainer = document.createElement('div');
+    buttonContainer.id = 'yt-timer-buttons';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.id = 'yt-timer-toggle';
+    toggleBtn.textContent = 'Start';
+
+    const resetBtn = document.createElement('button');
+    resetBtn.id = 'yt-timer-reset';
+    resetBtn.textContent = 'Reset';
+
+    buttonContainer.appendChild(toggleBtn);
+    buttonContainer.appendChild(resetBtn);
+
+    overlay.appendChild(timeEl);
+    overlay.appendChild(buttonContainer);
+
+    document.body.appendChild(overlay);
+
+    // ===== STYLES =====
+    const style = document.createElement('style');
+    style.textContent = `
+        #yt-timer-overlay {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 999999999;
+            background: rgba(0, 0, 0, 0.85);
+            color: white;
+            padding: 12px;
+            border-radius: 10px;
+            font-family: Arial, sans-serif;
+            width: 140px;
+            user-select: none;
+            cursor: move;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+        }
+
+        #yt-timer-time {
+            font-size: 28px;
+            text-align: center;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+
+        #yt-timer-buttons {
+            display: flex;
+            gap: 6px;
+        }
+
+        #yt-timer-buttons button {
+            flex: 1;
+            background: #222;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 6px;
+            padding: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        #yt-timer-buttons button:hover {
+            background: #333;
+        }
+
+        #yt-timer-overlay.red #yt-timer-time {
+            color: red;
+        }
+    `;
+
+    document.head.appendChild(style);
+
+    // ===== TIMER FUNCTIONS =====
+    function formatTime(seconds) {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+
+        return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+
+    function updateDisplay() {
+        timeEl.textContent = formatTime(remainingSeconds);
+
+        if (remainingSeconds <= 0) {
+            overlay.classList.add('red');
+        } else {
+            overlay.classList.remove('red');
+        }
+    }
+
+    function startTimer() {
+        if (running) return;
+
+        running = true;
+        toggleBtn.textContent = 'Pause';
+
+        interval = setInterval(() => {
+            if (remainingSeconds > 0) {
+                remainingSeconds--;
+                updateDisplay();
+            } else {
+                clearInterval(interval);
+                running = false;
+                toggleBtn.textContent = 'Start';
+            }
+        }, 1000);
+    }
+
+    function pauseTimer() {
+        running = false;
+        toggleBtn.textContent = 'Start';
+        clearInterval(interval);
+    }
+
+    function resetTimer() {
+        pauseTimer();
+        remainingSeconds = totalSeconds;
+        updateDisplay();
+    }
+
+    // ===== BUTTON EVENTS =====
+    toggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+
+        // If timer ended, auto-reset + start
+        if (remainingSeconds <= 0) {
+            remainingSeconds = totalSeconds;
+            updateDisplay();
+            startTimer();
+            return;
+        }
+
+        if (running) {
+            pauseTimer();
+        } else {
+            startTimer();
+        }
+    });
+
+    resetBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        resetTimer();
+    });
+
+    // ===== DRAGGING =====
+    let dragging = false;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    overlay.addEventListener('mousedown', (e) => {
+        if (e.target.tagName === 'BUTTON') return;
+
+        dragging = true;
+
+        const rect = overlay.getBoundingClientRect();
+
+        offsetX = e.clientX - rect.left;
+        offsetY = e.clientY - rect.top;
+
+        overlay.style.left = rect.left + 'px';
+        overlay.style.top = rect.top + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+
+        overlay.style.left = (e.clientX - offsetX) + 'px';
+        overlay.style.top = (e.clientY - offsetY) + 'px';
+    });
+
+    document.addEventListener('mouseup', () => {
+        dragging = false;
+    });
+
+    // ===== INIT =====
+    updateDisplay();
+})();
