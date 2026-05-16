@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hallenradsport Overlay YouTube
 // @namespace    hallenradsport-overlay
-// @version      1.8
+// @version      1.9
 // @description  Zeigt Live-Ergebnisse von hallenradsport-daum.de als flexibles Overlay (mit Autosize, Fullscreen-Fix & persistenter Auswahl)
 // @author       you
 // @match        *://www.youtube.com/*
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    const SOURCE_URL = 'https://www.hallenradsport-daum.de/index.php/live/live-kunstradgc';
+    const SOURCE_URL = 'https://www.hallenradsport-daum.de/index.php/live/live-kunstradint';
     const REFRESH_INTERVAL = 30000;
     const STORAGE_KEY = 'hr_overlay_youtube_state_v1';
     const BASE_FONT_SIZE = 30; // Init-Schriftgröße (px)
@@ -28,6 +28,7 @@
     const MAX_ROWS = 20; // Maximal angezeigte Reihen
     const DEFAULT_ALPHA = 0.8;
     const DEFAULT_HIGHLIGHTED_SEED_COUNT = 3;
+    const UPCOMING_STARTER_EXCLUSIONS = []; // exact starter names or "starter|eing"
     const trustedHTMLPolicy = window.trustedTypes?.createPolicy?.('hr-overlay-youtube', {
         createHTML: (input) => input
     });
@@ -453,7 +454,20 @@
     }
 
     function getUpcomingStarter(rows) {
-        return rows.find(r => !r.ausg || !r.ausg.trim()) || null;
+        const unfinishedRows = rows.filter(r => {
+            if (r.ausg && r.ausg.trim()) return false;
+            return !UPCOMING_STARTER_EXCLUSIONS.includes(r.starter) && !UPCOMING_STARTER_EXCLUSIONS.includes(`${r.starter}|${r.eing}`);
+        });
+        if (!unfinishedRows.length) return null;
+
+        return unfinishedRows.reduce((bestRow, currentRow) => {
+            const bestPoints = parsePoints(bestRow.eing);
+            const currentPoints = parsePoints(currentRow.eing);
+
+            if (bestPoints === null) return currentRow;
+            if (currentPoints === null) return bestRow;
+            return currentPoints < bestPoints ? currentRow : bestRow;
+        });
     }
 
     function parsePoints(value) {
@@ -579,24 +593,6 @@
         if (!target) return false;
         const tagName = target.tagName?.toLowerCase();
         return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable;
-    }
-
-    function getActiveVideo() {
-        const videos = Array.from(document.querySelectorAll('video'));
-        if (!videos.length) return null;
-
-        const visibleVideos = videos.filter(video => {
-            const rect = video.getBoundingClientRect();
-            const style = window.getComputedStyle(video);
-            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-        });
-
-        const candidates = visibleVideos.length ? visibleVideos : videos;
-        return candidates.sort((a, b) => {
-            const rectA = a.getBoundingClientRect();
-            const rectB = b.getBoundingClientRect();
-            return (rectB.width * rectB.height) - (rectA.width * rectA.height);
-        })[0] || null;
     }
 
     function showSettingsMenu(ui, ev, state) {
@@ -816,57 +812,6 @@
             }
         }
     });
-
-    // --- Video Controls ---
-    window.addEventListener('keydown', (ev) => {
-        if (isTypingTarget(ev.target)) return;
-        if (overlayVisible && overlayHovered) return;
-
-        const video = getActiveVideo();
-        if (!video) return;
-
-        switch (ev.key) {
-            case ' ':
-            case 'Spacebar': {
-                ev.preventDefault();
-                ev.stopPropagation();
-                ev.stopImmediatePropagation?.();
-                if (video.paused) {
-                    video.play?.().catch(() => {});
-                } else {
-                    video.pause?.();
-                }
-                break;
-            }
-
-            case 'ArrowLeft': {
-                ev.preventDefault();
-                ev.stopPropagation();
-                ev.stopImmediatePropagation?.();
-                video.currentTime = Math.max(0, (video.currentTime || 0) - 5);
-                break;
-            }
-
-            case 'ArrowRight': {
-                ev.preventDefault();
-                ev.stopPropagation();
-                ev.stopImmediatePropagation?.();
-                const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
-                video.currentTime = Math.min(duration, (video.currentTime || 0) + 5);
-                break;
-            }
-
-            case 'm':
-            case 'M': {
-                ev.preventDefault();
-                ev.stopPropagation();
-                ev.stopImmediatePropagation?.();
-                video.muted = !video.muted;
-                break;
-            }
-        }
-    }, true);
-
 
     /* --- Mouse Controls (replace # / + / - shortcuts) --- */
     let overlayVisible = true;

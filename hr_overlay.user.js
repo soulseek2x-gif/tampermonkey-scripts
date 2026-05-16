@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Hallenradsport Overlay tester
+// @name         Hallenradsport Overlay
 // @namespace    hallenradsport-overlay
-// @version      1.8
+// @version      1.9
 // @description  Zeigt Live-Ergebnisse von hallenradsport-daum.de als flexibles Overlay (mit Autosize, Fullscreen-Fix & persistenter Auswahl)
 // @author       you
 // @match        *://sporteurope.tv/*
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SOURCE_URL = 'https://www.hallenradsport-daum.de/index.php/live/live-kunstradgc';
+    const SOURCE_URL = 'https://www.hallenradsport-daum.de/index.php/live/live-kunstradint';
     const REFRESH_INTERVAL = 30000;
     const STORAGE_KEY = 'hr_overlay_state_v4';
     const BASE_FONT_SIZE = 30; // Init-Schriftgröße (px)
@@ -26,6 +26,7 @@
     const MAX_ROWS = 20; // Maximal angezeigte Reihen
     const DEFAULT_ALPHA = 0.8;
     const DEFAULT_HIGHLIGHTED_SEED_COUNT = 3;
+    const UPCOMING_STARTER_EXCLUSIONS = []; // exact starter names or "starter|eing"
     let tables = []; // globale Tabelle für Hotkeys / render
     let SHOW_DROPDOWNS = false; // set to false to start with dropdowns hidden
     let showUpcomingStarter = false;
@@ -390,7 +391,20 @@
     }
 
     function getUpcomingStarter(rows) {
-        return rows.find(r => !r.ausg || !r.ausg.trim()) || null;
+        const unfinishedRows = rows.filter(r => {
+            if (r.ausg && r.ausg.trim()) return false;
+            return !UPCOMING_STARTER_EXCLUSIONS.includes(r.starter) && !UPCOMING_STARTER_EXCLUSIONS.includes(`${r.starter}|${r.eing}`);
+        });
+        if (!unfinishedRows.length) return null;
+
+        return unfinishedRows.reduce((bestRow, currentRow) => {
+            const bestPoints = parsePoints(bestRow.eing);
+            const currentPoints = parsePoints(currentRow.eing);
+
+            if (bestPoints === null) return currentRow;
+            if (currentPoints === null) return bestRow;
+            return currentPoints < bestPoints ? currentRow : bestRow;
+        });
     }
 
     function parsePoints(value) {
