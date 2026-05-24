@@ -1,0 +1,121 @@
+// ==UserScript==
+// @name         Joyn.de Video Overlay Customizer (Control Bar Move)
+// @namespace    http://tampermonkey.net/
+// @version      5.0
+// @description  Moves video control buttons completely into the bottom progress bar layout.
+// @author       YourName
+// @match        https://*.joyn.de/*
+// @grant        none
+// @run-at       document-start
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    const controlBarButtonSize = "30px"; // Upgraded from 18px so they aren't too small!
+
+    function relocateButtons(shadow) {
+        const overlay = shadow.querySelector('.overlay-controls');
+        const controlBarRow = shadow.querySelector('.control-bar-row:not(.progress-bar-row)');
+
+        if (!overlay || !controlBarRow) return;
+
+        // 1. Wipe the background gradient completely
+        overlay.style.setProperty('background', 'none', 'important');
+
+        // 2. Locate all relevant control buttons
+        const buttons = overlay.querySelectorAll('.button');
+        if (buttons.length === 0) return;
+
+        // 3. Create or reuse a dedicated center container inside the control bar row
+        let centerContainer = controlBarRow.querySelector('#custom-center-controls');
+        if (!centerContainer) {
+            centerContainer = document.createElement('div');
+            centerContainer.id = 'custom-center-controls';
+
+            // Absolute positioning locked to the strict center axis of the control bar row
+            centerContainer.style.setProperty('position', 'absolute', 'important');
+            centerContainer.style.setProperty('left', '50%', 'important');
+            centerContainer.style.setProperty('top', '50%', 'important'); // Pulls down exactly halfway
+
+            // Dual transform handles both horizontal AND vertical leveling simultaneously
+            centerContainer.style.setProperty('transform', 'translate(-50%, -50%)', 'important');
+
+            // Clean flexbox layout to align the buttons internally
+            centerContainer.style.setProperty('display', 'flex', 'important');
+            centerContainer.style.setProperty('align-items', 'center', 'important'); // Centers the buttons vertically inside the box
+            centerContainer.style.setProperty('justify-content', 'center', 'important');
+            centerContainer.style.setProperty('gap', '1.2em', 'important');
+            centerContainer.style.setProperty('pointer-events', 'auto', 'important');
+
+            controlBarRow.appendChild(centerContainer);
+        }
+
+        // 4. Move buttons into our absolute centered layout container
+        buttons.forEach(btn => {
+            btn.style.setProperty('position', 'static', 'important');
+            btn.style.setProperty('transform', 'none', 'important');
+            btn.style.setProperty('margin', '0', 'important');
+            btn.style.setProperty('padding', '0', 'important'); // Removes any default padding anomalies
+            btn.style.setProperty('font-size', controlBarButtonSize, 'important');
+
+            // Explicitly force the button itself to be an inline-flex box centering its own text node / vector graphics
+            btn.style.setProperty('display', 'inline-flex', 'important');
+            btn.style.setProperty('align-items', 'center', 'important');
+            btn.style.setProperty('justify-content', 'center', 'important');
+
+            // Ensure inside vectors expand cleanly to the new size
+            const icon = btn.querySelector('iconify-icon');
+            if (icon) {
+                icon.style.setProperty('font-size', '1em', 'important');
+                icon.style.setProperty('width', '1em', 'important');
+                icon.style.setProperty('height', '1em', 'important');
+                icon.style.setProperty('display', 'block', 'important');
+            }
+
+            // Append to our custom absolute-center container
+            centerContainer.appendChild(btn);
+        });
+    }
+
+    // Finds the player shadow root and hooks up our structural listener
+    function setupShadowObserver(root) {
+        if (!root) return false;
+
+        const overlay = root.querySelector('.overlay-controls');
+        const controlBarRow = root.querySelector('.control-bar-row:not(.progress-bar-row)');
+
+        if (overlay && controlBarRow) {
+            // Execute the initial transplant pass immediately
+            relocateButtons(root);
+
+            // Re-apply whenever the site's layout engine attempts to recreate or hide the player states
+            const internalObserver = new MutationObserver(() => {
+                internalObserver.disconnect();
+                relocateButtons(root);
+                internalObserver.observe(root, { childList: true, subtree: true, attributes: true });
+            });
+
+            internalObserver.observe(root, { childList: true, subtree: true, attributes: true });
+            return true;
+        }
+
+        // Search nested custom elements
+        const elements = root.querySelectorAll('*');
+        for (let i = 0; i < elements.length; i++) {
+            if (elements[i].shadowRoot) {
+                if (setupShadowObserver(elements[i].shadowRoot)) return true;
+            }
+        }
+        return false;
+    }
+
+    // High performance initialization hook
+    const startupPoll = setInterval(() => {
+        const hookedSuccessfully = setupShadowObserver(document);
+        if (hookedSuccessfully) {
+            clearInterval(startupPoll);
+        }
+    }, 300);
+
+})();
