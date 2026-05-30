@@ -15,10 +15,12 @@
 (function () {
     'use strict';
 
-    const SOURCE_URL = 'https://www.hallenradsport-daum.de/index.php/live/live-kunstradint';
+    const DEFAULT_SOURCE_URL = 'https://www.hallenradsport-daum.de/index.php/live/live-kunstradint';
+    let SOURCE_URL = DEFAULT_SOURCE_URL;
     const REFRESH_INTERVAL = 30000;
     const STORAGE_KEY = 'hr_overlay_state_v4';
     const BASE_FONT_SIZE = 30; // Init-Schriftgröße (px)
+    const DEFAULT_TIMER_SECONDS = 5 * 60;
     const COL_PLATZ = 0; // Spalte für Platzierung
     const COL_STARTER = 1; // Spalte für Startername
     const COL_EING = 3; // Spalte für Startername
@@ -32,6 +34,9 @@
     let showUpcomingStarter = false;
     let rankColoringEnabled = true;
     let highlightedSeedCount = DEFAULT_HIGHLIGHTED_SEED_COUNT;
+    let timerUi = null;
+    let timerState = null;
+    let timerAudioContext = null;
 
     GM_addStyle(`
     #hr_overlay {
@@ -121,6 +126,109 @@
     #hr_overlay .hr_menu button:hover {
       background: #2b2b2b;
     }
+    #hr_overlay .hr_menu input[type="text"] {
+      width: 150px;
+    }
+    #hr_timer_overlay {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 2147483646;
+      background: rgba(0,0,0,0.85);
+      color: #fff;
+      padding: 6px;
+      border-radius: 10px;
+      box-sizing: border-box;
+      min-width: 150px;
+      width: max-content;
+      user-select: none;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-family: "Source Code Pro", monospace;
+      box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    }
+    #hr_timer_overlay .hr_timer_body {
+      display: flex;
+      align-items: stretch;
+      gap: 4px;
+    }
+    #hr_timer_overlay .hr_timer_time {
+      font-size: 28px;
+      text-align: center;
+      font-weight: bold;
+      line-height: 1.1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 5.2ch;
+      min-width: 0;
+      padding: 0;
+    }
+    #hr_timer_overlay .hr_timer_buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    #hr_timer_overlay .hr_timer_buttons button {
+      width: 32px;
+      height: 32px;
+      background: #222;
+      color: white;
+      border: 1px solid #555;
+      border-radius: 6px;
+      padding: 0;
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #hr_timer_overlay .hr_timer_buttons button:hover {
+      background: #333;
+    }
+    #hr_timer_overlay .hr_timer_menu {
+      position: absolute;
+      min-width: 220px;
+      background: rgba(18,18,18,0.96);
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 10px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      padding: 10px;
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 2147483647;
+      font-size: inherit;
+    }
+    #hr_timer_overlay .hr_timer_menu label,
+    #hr_timer_overlay .hr_timer_menu .hr_menu_label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: inherit;
+    }
+    #hr_timer_overlay .hr_timer_menu input[type="number"],
+    #hr_timer_overlay .hr_timer_menu input[type="text"] {
+      width: 72px;
+    }
+    #hr_timer_overlay .hr_timer_menu input,
+    #hr_timer_overlay .hr_timer_menu button {
+      background: #222;
+      color: #fff;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 4px 6px;
+      font: inherit;
+    }
+    #hr_timer_overlay .hr_timer_menu button {
+      cursor: pointer;
+    }
+    #hr_timer_overlay .hr_timer_menu button:hover {
+      background: #2b2b2b;
+    }
     #hr_overlay .resize-handle {
       width: 14px;
       height: 14px;
@@ -130,6 +238,24 @@
       cursor: se-resize;
     }
     #hr_overlay .resize-handle:after {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      width: 10px;
+      height: 10px;
+      border-right: 2px solid rgba(255,255,255,0.4);
+      border-bottom: 2px solid rgba(255,255,255,0.4);
+    }
+    #hr_timer_overlay .resize-handle {
+      width: 14px;
+      height: 14px;
+      position: absolute;
+      right: 6px;
+      bottom: 6px;
+      cursor: se-resize;
+    }
+    #hr_timer_overlay .resize-handle:after {
       content: "";
       position: absolute;
       right: 0;
@@ -195,6 +321,8 @@
         <label><span>Rank coloring</span><input type="checkbox" id="hr_rank_coloring"></label>
         <label><span>Highlighted finishers</span><input type="number" id="hr_highlight_count" min="0" max="10" step="1"></label>
         <label><span>Transparency</span><input type="range" id="hr_alpha" min="0" max="100" step="5"></label>
+        <label><span>Source URL</span><input type="text" id="hr_source_url" spellcheck="false"></label>
+        <label><span>Timer overlay</span><input type="checkbox" id="hr_timer_enabled"></label>
         <div class="hr_menu_label"><span id="hr_alpha_value">80%</span><button type="button" id="hr_reset_settings">Reset</button></div>
       </div>
       <div class="resize-handle"></div>
@@ -215,6 +343,8 @@
             menuRankColoring: root.querySelector('#hr_rank_coloring'),
             menuHighlightCount: root.querySelector('#hr_highlight_count'),
             menuAlpha: root.querySelector('#hr_alpha'),
+            menuSourceUrl: root.querySelector('#hr_source_url'),
+            menuTimerEnabled: root.querySelector('#hr_timer_enabled'),
             menuAlphaValue: root.querySelector('#hr_alpha_value'),
             menuReset: root.querySelector('#hr_reset_settings'),
             resizeHandle: root.querySelector('.resize-handle')
@@ -236,16 +366,23 @@
         return !!ui?.menu && window.getComputedStyle(ui.menu).display !== 'none';
     }
 
+    function isTimerMenuOpen(timerUi) {
+        return !!timerUi?.menu && window.getComputedStyle(timerUi.menu).display !== 'none';
+    }
+
     /* --- Drag & Resize --- */
 
-    function makeDraggable(el, onSave) {
+    function makeDraggable(el, onSave, options = {}) {
         let dragging = false;
+        const ignoreSelectors = options.ignoreSelectors || [];
+        const shouldBlockDrag = options.shouldBlockDrag || (() => false);
         let startX, startY, origLeft, origTop;
         el.addEventListener('pointerdown', (ev) => {
             if (ev.button !== 0) return;
-            if (isSettingsMenuOpen(ui)) return;
+            if (shouldBlockDrag()) return;
             if (ev.target.tagName === 'SELECT' || ev.target.classList.contains('resize-handle')) return;
-            if (ev.target.closest('.hr_menu')) return;
+            if (ignoreSelectors.some(sel => ev.target.closest(sel))) return;
+            if (ev.target.closest('button, input, textarea, [role="button"], [contenteditable="true"]')) return;
             ev.preventDefault();
             dragging = true;
             el.setPointerCapture(ev.pointerId);
@@ -272,8 +409,9 @@
         });
     }
 
-    function makeResizable(el, handle, onEnd) {
+    function makeResizable(el, handle, onEnd, options = {}) {
         let resizing = false;
+        const onResize = options.onResize;
         let startX, startY, startW, startH;
 
         handle.addEventListener('pointerdown', (ev) => {
@@ -298,10 +436,14 @@
 
             const scale = newW / 300;
             el.style.fontSize = (13 * scale) + 'px';
-            el.querySelectorAll('select').forEach(sel => {
-                sel.style.fontSize = (13 * scale) + 'px';
-                sel.style.padding = `${(4 * scale)}px`;
-            });
+            if (onResize) {
+                onResize({ newW, newH, scale, el });
+            } else {
+                el.querySelectorAll('select').forEach(sel => {
+                    sel.style.fontSize = (13 * scale) + 'px';
+                    sel.style.padding = `${(4 * scale)}px`;
+                });
+            }
         });
 
         window.addEventListener('pointerup', (ev) => {
@@ -328,6 +470,221 @@
             document.body.appendChild(overlay);
             overlay.style.position = 'fixed';
         }
+    }
+
+    function formatTimerTime(seconds) {
+        const safeSeconds = Math.max(0, Math.floor(seconds));
+        const mins = Math.floor(safeSeconds / 60);
+        const secs = safeSeconds % 60;
+        return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+
+    function parseTimerDurationInput(value) {
+        const raw = String(value ?? '').trim();
+        if (!raw) return null;
+
+        const mmssMatch = raw.match(/^(\d{1,3}):([0-5]?\d)$/);
+        if (mmssMatch) {
+            return Math.max(1, (parseInt(mmssMatch[1], 10) * 60) + parseInt(mmssMatch[2], 10));
+        }
+
+        if (/^\d+$/.test(raw)) {
+            return Math.max(1, parseInt(raw, 10) * 60);
+        }
+
+        return null;
+    }
+
+    function resolveTimerSeconds(value) {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : null;
+    }
+
+    function autoTimerHeight(timerUi) {
+        if (!timerUi?.root) return;
+        if (window.getComputedStyle(timerUi.root).display === 'none') return;
+
+        const root = timerUi.root;
+        const rootStyle = window.getComputedStyle(root);
+        const borderTop = parseFloat(rootStyle.borderTopWidth || 0) || 0;
+        const borderBottom = parseFloat(rootStyle.borderBottomWidth || 0) || 0;
+        const handleReserve = 20;
+
+        root.style.height = 'auto';
+        const nextHeight = Math.max(
+            48,
+            Math.ceil(root.scrollHeight + borderTop + borderBottom + handleReserve)
+        );
+        root.style.height = `${nextHeight}px`;
+    }
+
+    function scheduleTimerHeightSync() {
+        if (!timerUi?.root) return;
+        requestAnimationFrame(() => autoTimerHeight(timerUi));
+    }
+
+    function ensureTimerAudioContext() {
+        if (!timerAudioContext) {
+            const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextCtor) return null;
+            timerAudioContext = new AudioContextCtor();
+        }
+
+        if (timerAudioContext.state === 'suspended') {
+            timerAudioContext.resume().catch(() => {});
+        }
+
+        return timerAudioContext;
+    }
+
+    function playTimerDing() {
+        if (!state.timerDingEnabled) return;
+        const ctx = ensureTimerAudioContext();
+        if (!ctx) return;
+
+        const now = ctx.currentTime;
+        const frequencies = [880, 660];
+        frequencies.forEach((frequency, index) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.value = frequency;
+            gain.gain.setValueAtTime(0.0001, now + index * 0.16);
+            gain.gain.exponentialRampToValueAtTime(0.2, now + index * 0.18);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + index * 0.18 + 0.12);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(now + index * 0.16);
+            osc.stop(now + index * 0.18 + 0.14);
+        });
+    }
+
+    function updateTimerDisplay() {
+        if (!timerUi || !timerState) return;
+        timerUi.time.textContent = formatTimerTime(timerState.remainingSeconds);
+        timerUi.root.classList.toggle('hr_timer_zero', timerState.remainingSeconds <= 0);
+        timerUi.toggle.textContent = timerState.running ? '❚❚' : '▶';
+        timerUi.toggle.title = timerState.running ? 'Pause' : 'Start';
+        timerUi.reset.textContent = '↺';
+        timerUi.reset.title = 'Reset';
+        scheduleTimerHeightSync();
+    }
+
+    function pauseTimer() {
+        if (!timerState) return;
+        timerState.running = false;
+        if (timerState.interval) {
+            clearInterval(timerState.interval);
+            timerState.interval = null;
+        }
+        updateTimerDisplay();
+    }
+
+    function resetTimer() {
+        if (!timerState) return;
+        pauseTimer();
+        timerState.remainingSeconds = timerState.totalSeconds;
+        timerState.alerted = false;
+        updateTimerDisplay();
+    }
+
+    function startTimer() {
+        if (!timerState) return;
+        if (timerState.running) return;
+
+        ensureTimerAudioContext();
+
+        if (timerState.remainingSeconds <= 0) {
+            timerState.remainingSeconds = timerState.totalSeconds;
+            timerState.alerted = false;
+        }
+
+        timerState.running = true;
+        timerState.interval = window.setInterval(() => {
+            if (timerState.remainingSeconds > 0) {
+                timerState.remainingSeconds -= 1;
+                if (timerState.remainingSeconds === 0 && !timerState.alerted) {
+                    timerState.alerted = true;
+                    playTimerDing();
+                }
+                updateTimerDisplay();
+                return;
+            }
+
+            timerState.running = false;
+            if (timerState.interval) {
+                clearInterval(timerState.interval);
+                timerState.interval = null;
+            }
+            updateTimerDisplay();
+        }, 1000);
+
+        updateTimerDisplay();
+    }
+
+    function setTimerDuration(value) {
+        if (!timerState) return;
+        const normalized = typeof value === 'number'
+            ? Math.max(1, Math.floor(value))
+            : (parseTimerDurationInput(value) ?? DEFAULT_TIMER_SECONDS);
+        pauseTimer();
+        timerState.totalSeconds = normalized;
+        timerState.remainingSeconds = timerState.totalSeconds;
+        timerState.alerted = false;
+        state.timerSeconds = normalized;
+        delete state.timerMinutes;
+        state.timerDuration = formatTimerTime(normalized);
+        saveState(state);
+        if (timerUi?.menuDuration) timerUi.menuDuration.value = formatTimerTime(normalized);
+        scheduleTimerHeightSync();
+        updateTimerDisplay();
+    }
+
+    function syncTimerMenu() {
+        if (!timerUi) return;
+        const storedSeconds = resolveTimerSeconds(state.timerSeconds) ?? parseTimerDurationInput(state.timerDuration) ?? DEFAULT_TIMER_SECONDS;
+        timerUi.menuDuration.value = formatTimerTime(storedSeconds);
+        timerUi.menuDing.checked = !!state.timerDingEnabled;
+        scheduleTimerHeightSync();
+    }
+
+    function applyTimerVisibility() {
+        if (!timerUi) return;
+        timerUi.root.style.display = state.timerEnabled ? 'flex' : 'none';
+        if (!state.timerEnabled) {
+            pauseTimer();
+        }
+        scheduleTimerHeightSync();
+    }
+
+    function createTimerOverlay() {
+        const root = document.createElement('div');
+        root.id = 'hr_timer_overlay';
+        root.innerHTML = `
+      <div class="hr_timer_body">
+        <div class="hr_timer_time" id="hr_timer_time">05:00</div>
+        <div class="hr_timer_buttons">
+          <button type="button" id="hr_timer_toggle" aria-label="Start">▶</button>
+          <button type="button" id="hr_timer_reset" aria-label="Reset">↺</button>
+        </div>
+      </div>
+      <div class="hr_timer_menu" id="hr_timer_menu">
+        <label><span>Default time (mm:ss)</span><input type="text" id="hr_timer_duration" inputmode="numeric" spellcheck="false" placeholder="05:00"></label>
+        <label><span>Ding on zero</span><input type="checkbox" id="hr_timer_ding"></label>
+      </div>
+      <div class="resize-handle"></div>
+    `;
+        document.body.appendChild(root);
+        return {
+            root,
+            time: root.querySelector('#hr_timer_time'),
+            toggle: root.querySelector('#hr_timer_toggle'),
+            reset: root.querySelector('#hr_timer_reset'),
+            menu: root.querySelector('#hr_timer_menu'),
+            menuDuration: root.querySelector('#hr_timer_duration'),
+            menuDing: root.querySelector('#hr_timer_ding'),
+            resizeHandle: root.querySelector('.resize-handle')
+        };
     }
 
     /* --- Inhalt / Anzeige --- */
@@ -506,11 +863,18 @@
         ui.menu.style.display = 'none';
     }
 
+    function hideTimerMenu(timerUi) {
+        if (!timerUi?.menu) return;
+        timerUi.menu.style.display = 'none';
+    }
+
     function syncSettingsMenu(ui, state) {
         if (!ui?.menu) return;
         ui.menuRankColoring.checked = rankColoringEnabled;
         ui.menuHighlightCount.value = String(highlightedSeedCount);
         ui.menuAlpha.value = String(Math.round((state.alpha ?? DEFAULT_ALPHA) * 100));
+        ui.menuSourceUrl.value = state.sourceUrl || DEFAULT_SOURCE_URL;
+        ui.menuTimerEnabled.checked = !!state.timerEnabled;
         ui.menuAlphaValue.textContent = `${ui.menuAlpha.value}%`;
     }
 
@@ -550,6 +914,20 @@
         const top = Math.min(Math.max(0, ev.clientY - rootRect.top), Math.max(0, rootRect.height - menuHeight - 8));
         ui.menu.style.left = `${left}px`;
         ui.menu.style.top = `${top}px`;
+    }
+
+    function showTimerMenu(timerUi, ev) {
+        if (!timerUi?.menu) return;
+        syncTimerMenu();
+
+        const rootRect = timerUi.root.getBoundingClientRect();
+        timerUi.menu.style.display = 'flex';
+        const menuWidth = timerUi.menu.offsetWidth;
+        const menuHeight = timerUi.menu.offsetHeight;
+        const left = Math.min(Math.max(0, ev.clientX - rootRect.left), Math.max(0, rootRect.width - menuWidth - 8));
+        const top = Math.min(Math.max(0, ev.clientY - rootRect.top), Math.max(0, rootRect.height - menuHeight - 8));
+        timerUi.menu.style.left = `${left}px`;
+        timerUi.menu.style.top = `${top}px`;
     }
 
     function cycleDisplayMode(ui) {
@@ -616,6 +994,17 @@
     /* --- Hauptlogik --- */
 
     const state = loadState();
+    state.sourceUrl = (state.sourceUrl || DEFAULT_SOURCE_URL).trim() || DEFAULT_SOURCE_URL;
+    state.timerEnabled = state.timerEnabled ?? false;
+    state.timerDingEnabled = state.timerDingEnabled ?? true;
+    state.timerAutoFit = state.timerAutoFit ?? true;
+    state.timerSeconds = resolveTimerSeconds(state.timerSeconds)
+        ?? parseTimerDurationInput(state.timerDuration)
+        ?? (Number.isFinite(parseInt(state.timerMinutes, 10)) ? Math.max(1, parseInt(state.timerMinutes, 10) * 60) : null)
+        ?? DEFAULT_TIMER_SECONDS;
+    state.timerDuration = formatTimerTime(state.timerSeconds);
+    delete state.timerMinutes;
+    SOURCE_URL = (state.sourceUrl || DEFAULT_SOURCE_URL).trim() || DEFAULT_SOURCE_URL;
     const ui = createOverlay();
     ui.root.style.fontSize = BASE_FONT_SIZE + 'px';
     rankColoringEnabled = state.rankColoringEnabled ?? true;
@@ -629,11 +1018,21 @@
         const rect = ui.root.getBoundingClientRect();
         Object.assign(state, { left: rect.left + 'px', top: rect.top + 'px' });
         saveState(state);
+    }, {
+        shouldBlockDrag: () => isSettingsMenuOpen(ui),
+        ignoreSelectors: ['.hr_menu']
     });
     makeResizable(ui.root, ui.resizeHandle, () => {
         const rect = ui.root.getBoundingClientRect();
         Object.assign(state, { width: rect.width + 'px', height: rect.height + 'px', fontSize: ui.root.style.fontSize });
         saveState(state);
+    }, {
+        onResize: ({ scale, el }) => {
+            el.querySelectorAll('select').forEach(sel => {
+                sel.style.fontSize = (13 * scale) + 'px';
+                sel.style.padding = `${(4 * scale)}px`;
+            });
+        }
     });
 
     const selection = {
@@ -641,13 +1040,86 @@
         countValue: state.countValue || 3
     };
 
+    timerUi = createTimerOverlay();
+    timerState = {
+        totalSeconds: state.timerSeconds,
+        remainingSeconds: state.timerSeconds,
+        running: false,
+        interval: null,
+        alerted: false
+    };
+    timerUi.root.style.fontSize = BASE_FONT_SIZE + 'px';
+    if (!state.timerAutoFit && state.timerWidth) timerUi.root.style.width = state.timerWidth;
+    if (state.timerLeft && state.timerTop) {
+        timerUi.root.style.left = state.timerLeft;
+        timerUi.root.style.top = state.timerTop;
+        timerUi.root.style.right = 'auto';
+        timerUi.root.style.bottom = 'auto';
+    }
+    timerUi.root.style.fontSize = state.timerFontSize || '13px';
+    delete state.timerHeight;
+    if (state.timerAutoFit) {
+        delete state.timerWidth;
+    }
+
+    makeDraggable(timerUi.root, () => {
+        const rect = timerUi.root.getBoundingClientRect();
+        Object.assign(state, { timerLeft: rect.left + 'px', timerTop: rect.top + 'px' });
+        saveState(state);
+    }, {
+        shouldBlockDrag: () => isTimerMenuOpen(timerUi),
+        ignoreSelectors: ['.hr_timer_menu']
+    });
+    makeResizable(timerUi.root, timerUi.resizeHandle, () => {
+        const rect = timerUi.root.getBoundingClientRect();
+        Object.assign(state, {
+            timerFontSize: timerUi.root.style.fontSize
+        });
+        state.timerAutoFit = true;
+        delete state.timerWidth;
+        delete state.timerHeight;
+        saveState(state);
+        timerUi.root.style.width = 'max-content';
+        scheduleTimerHeightSync();
+    }, {
+        onResize: ({ scale, el }) => {
+            const timeEl = el.querySelector('.hr_timer_time');
+            const buttonsEl = el.querySelector('.hr_timer_buttons');
+            const buttonEls = el.querySelectorAll('.hr_timer_buttons button');
+            const bodyEl = el.querySelector('.hr_timer_body');
+
+            if (bodyEl) {
+                bodyEl.style.gap = `${Math.max(3, 6 * scale)}px`;
+            }
+            if (timeEl) {
+                timeEl.style.fontSize = `${28 * scale}px`;
+                timeEl.style.width = `${5.2 * scale}ch`;
+            }
+            if (buttonsEl) {
+                buttonsEl.style.gap = `${Math.max(2, 3 * scale)}px`;
+            }
+            buttonEls.forEach(btn => {
+                const size = Math.max(22, 32 * scale);
+                btn.style.width = `${size}px`;
+                btn.style.height = `${size}px`;
+                btn.style.fontSize = `${Math.max(10, 15 * scale)}px`;
+            });
+            scheduleTimerHeightSync();
+        }
+    });
+
+    syncTimerMenu();
+    updateTimerDisplay();
+    applyTimerVisibility();
+
     document.addEventListener('fullscreenchange', () => {
         attachToFullscreen(ui.root);
+        attachToFullscreen(timerUi.root);
         requestAnimationFrame(() => updateLayout(ui, tables));
     });
 
     window.addEventListener('resize', () => {
-        if (ui.root.style.display === 'none') return;
+        if (ui.root.style.display === 'none' && timerUi.root.style.display === 'none') return;
         requestAnimationFrame(() => updateLayout(ui, tables));
     });
 
@@ -842,21 +1314,90 @@
         saveState(state);
     });
 
+    ui.menuSourceUrl.addEventListener('change', () => {
+        const nextUrl = ui.menuSourceUrl.value.trim() || DEFAULT_SOURCE_URL;
+        SOURCE_URL = nextUrl;
+        state.sourceUrl = nextUrl;
+        saveState(state);
+        refresh();
+    });
+
+    ui.menuTimerEnabled.addEventListener('change', () => {
+        state.timerEnabled = ui.menuTimerEnabled.checked;
+        saveState(state);
+        applyTimerVisibility();
+    });
+
     ui.menuReset.addEventListener('click', () => {
         rankColoringEnabled = true;
         highlightedSeedCount = DEFAULT_HIGHLIGHTED_SEED_COUNT;
         state.rankColoringEnabled = true;
         state.highlightedSeedCount = DEFAULT_HIGHLIGHTED_SEED_COUNT;
         state.alpha = DEFAULT_ALPHA;
+        state.sourceUrl = DEFAULT_SOURCE_URL;
+        SOURCE_URL = DEFAULT_SOURCE_URL;
+        state.timerEnabled = false;
+        state.timerSeconds = DEFAULT_TIMER_SECONDS;
+        state.timerDuration = formatTimerTime(DEFAULT_TIMER_SECONDS);
+        state.timerDingEnabled = true;
+        state.timerAutoFit = true;
+        delete state.timerHeight;
+        delete state.timerWidth;
         applyOverlayAlpha(ui, state.alpha);
         syncSettingsMenu(ui, state);
         saveState(state);
         updateLayout(ui, tables);
+        setTimerDuration(DEFAULT_TIMER_SECONDS);
+        state.timerDingEnabled = true;
+        syncTimerMenu();
+        applyTimerVisibility();
+    });
+
+    timerUi.root.addEventListener('contextmenu', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        hideSettingsMenu(ui);
+        showTimerMenu(timerUi, ev);
+    });
+
+    timerUi.menu.addEventListener('mousedown', (ev) => {
+        ev.stopPropagation();
+    });
+
+    timerUi.menu.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+    });
+
+    timerUi.toggle.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (timerState.remainingSeconds <= 0) {
+            resetTimer();
+        }
+        if (timerState.running) {
+            pauseTimer();
+        } else {
+            startTimer();
+        }
+    });
+
+    timerUi.reset.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        resetTimer();
+    });
+
+    timerUi.menuDuration.addEventListener('change', () => {
+        setTimerDuration(timerUi.menuDuration.value);
+    });
+
+    timerUi.menuDing.addEventListener('change', () => {
+        state.timerDingEnabled = timerUi.menuDing.checked;
+        saveState(state);
     });
 
     document.addEventListener('mousedown', (ev) => {
-        if (ui.root.contains(ev.target)) return;
+        if (ui.root.contains(ev.target) || timerUi.root.contains(ev.target)) return;
         hideSettingsMenu(ui);
+        hideTimerMenu(timerUi);
     });
 
     ui.root.addEventListener('mousedown', (ev) => {
