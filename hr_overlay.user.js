@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hallenradsport Overlay
 // @namespace    hallenradsport-overlay
-// @version      1.9
+// @version      1.10
 // @description  Zeigt Live-Ergebnisse von hallenradsport-daum.de als flexibles Overlay (mit Autosize, Fullscreen-Fix & persistenter Auswahl)
 // @author       you
 // @match        *://sporteurope.tv/*
@@ -165,6 +165,9 @@
       min-width: 0;
       padding: 0;
     }
+    #hr_timer_overlay.hr_timer_zero .hr_timer_time {
+      color: #ff5c5c;
+    }
     #hr_timer_overlay .hr_timer_buttons {
       display: flex;
       flex-direction: column;
@@ -322,6 +325,7 @@
         <label><span>Highlighted finishers</span><input type="number" id="hr_highlight_count" min="0" max="10" step="1"></label>
         <label><span>Transparency</span><input type="range" id="hr_alpha" min="0" max="100" step="5"></label>
         <label><span>Source URL</span><input type="text" id="hr_source_url" spellcheck="false"></label>
+        <label><span>Next by lowest Eing.</span><input type="checkbox" id="hr_next_by_points"></label>
         <label><span>Timer overlay</span><input type="checkbox" id="hr_timer_enabled"></label>
         <div class="hr_menu_label"><span id="hr_alpha_value">80%</span><button type="button" id="hr_reset_settings">Reset</button></div>
       </div>
@@ -344,6 +348,7 @@
             menuHighlightCount: root.querySelector('#hr_highlight_count'),
             menuAlpha: root.querySelector('#hr_alpha'),
             menuSourceUrl: root.querySelector('#hr_source_url'),
+            menuNextByPoints: root.querySelector('#hr_next_by_points'),
             menuTimerEnabled: root.querySelector('#hr_timer_enabled'),
             menuAlphaValue: root.querySelector('#hr_alpha_value'),
             menuReset: root.querySelector('#hr_reset_settings'),
@@ -754,6 +759,10 @@
         });
         if (!unfinishedRows.length) return null;
 
+        if (!state.nextStarterByPoints) {
+            return unfinishedRows[0];
+        }
+
         return unfinishedRows.reduce((bestRow, currentRow) => {
             const bestPoints = parsePoints(bestRow.eing);
             const currentPoints = parsePoints(currentRow.eing);
@@ -874,6 +883,7 @@
         ui.menuHighlightCount.value = String(highlightedSeedCount);
         ui.menuAlpha.value = String(Math.round((state.alpha ?? DEFAULT_ALPHA) * 100));
         ui.menuSourceUrl.value = state.sourceUrl || DEFAULT_SOURCE_URL;
+        ui.menuNextByPoints.checked = !!state.nextStarterByPoints;
         ui.menuTimerEnabled.checked = !!state.timerEnabled;
         ui.menuAlphaValue.textContent = `${ui.menuAlpha.value}%`;
     }
@@ -995,6 +1005,7 @@
 
     const state = loadState();
     state.sourceUrl = (state.sourceUrl || DEFAULT_SOURCE_URL).trim() || DEFAULT_SOURCE_URL;
+    state.nextStarterByPoints = state.nextStarterByPoints ?? true;
     state.timerEnabled = state.timerEnabled ?? false;
     state.timerDingEnabled = state.timerDingEnabled ?? true;
     state.timerAutoFit = state.timerAutoFit ?? true;
@@ -1322,6 +1333,12 @@
         refresh();
     });
 
+    ui.menuNextByPoints.addEventListener('change', () => {
+        state.nextStarterByPoints = ui.menuNextByPoints.checked;
+        saveState(state);
+        updateLayout(ui, tables);
+    });
+
     ui.menuTimerEnabled.addEventListener('change', () => {
         state.timerEnabled = ui.menuTimerEnabled.checked;
         saveState(state);
@@ -1335,6 +1352,7 @@
         state.highlightedSeedCount = DEFAULT_HIGHLIGHTED_SEED_COUNT;
         state.alpha = DEFAULT_ALPHA;
         state.sourceUrl = DEFAULT_SOURCE_URL;
+        state.nextStarterByPoints = true;
         SOURCE_URL = DEFAULT_SOURCE_URL;
         state.timerEnabled = false;
         state.timerSeconds = DEFAULT_TIMER_SECONDS;
