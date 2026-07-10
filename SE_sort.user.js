@@ -5,6 +5,8 @@
 // @description  Sort SportEurope search results newest first
 // @author       SoulSeek2
 // @match        https://sporteurope.tv/suche/*
+// @downloadURL https://raw.githubusercontent.com/soulseek2x-gif/tampermonkey-scripts/main/SE_sort.user.js
+// @updateURL   https://raw.githubusercontent.com/soulseek2x-gif/tampermonkey-scripts/main/SE_sort.user.js
 // @grant        none
 // ==/UserScript==
 
