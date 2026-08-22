@@ -1,21 +1,24 @@
 // ==UserScript==
 // @name         Hallenradsport Overlay
 // @namespace    hallenradsport-overlay
-// @version      1.10
+// @version      1.12
 // @description  Zeigt Live-Ergebnisse von hallenradsport-daum.de als flexibles Overlay (mit Autosize, Fullscreen-Fix & persistenter Auswahl)
 // @author       you
 // @match        *://sporteurope.tv/*
+// @match        *://ergebnisse.hallenradsport-daum.de/*
+// @match        *://*.hallenradsport-daum.de/*
 // @downloadURL  https://raw.githubusercontent.com/soulseek2x-gif/tampermonkey-scripts/main/hr_overlay.user.js
 // @updateURL    https://raw.githubusercontent.com/soulseek2x-gif/tampermonkey-scripts/main/hr_overlay.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @connect      hallenradsport-daum.de
+// @connect      ergebnisse.hallenradsport-daum.de
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const DEFAULT_SOURCE_URL = 'https://www.hallenradsport-daum.de/index.php/live/live-kunstradint';
+    const DEFAULT_SOURCE_URL = 'https://ergebnisse.hallenradsport-daum.de/livekunstrad/kunstradlive.xml';
     let SOURCE_URL = DEFAULT_SOURCE_URL;
     const REFRESH_INTERVAL = 30000;
     const STORAGE_KEY = 'hr_overlay_state_v4';
@@ -37,6 +40,7 @@
     let timerUi = null;
     let timerState = null;
     let timerAudioContext = null;
+    let ui = null;
 
     GM_addStyle(`
     #hr_overlay {
@@ -272,15 +276,68 @@
 
     /* --- Hilfsfunktionen --- */
 
-    function gmFetchHTML() {
+    function gmFetch(url) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: SOURCE_URL,
+                url: url,
                 onload: (r) => resolve(r.responseText),
                 onerror: reject
             });
         });
+    }
+
+    function parseJSON(jsonText) {
+        try {
+            const data = typeof jsonText === 'string' ? JSON.parse(jsonText) : jsonText;
+            if (!data) return null;
+
+            let result = [];
+
+            if (Array.isArray(data.disziplinen)) {
+                data.disziplinen.forEach(dis => {
+                    const title = (dis.name || "Disziplin").trim();
+                    const rows = (dis.starter || []).map(st => ({
+                        platz: String(st.platz || '').trim(),
+                        starter: String(st.name || '').trim(),
+                        verein: String(st.verein || '').trim(),
+                        eing: String(st.eing || '').trim(),
+                        ausg: String(st.ausg || '').trim(),
+                        aktiv: String(st.aktiv || '0').trim()
+                    }));
+                    result.push({ title, rows });
+                });
+                return result.length > 0 ? result : null;
+            }
+
+            if (Array.isArray(data.tabelle) || Array.isArray(data.spiele)) {
+                if (Array.isArray(data.spiele) && data.spiele.length > 0) {
+                    const rows = data.spiele.map(s => ({
+                        platz: String(s.nr || '').trim(),
+                        starter: `${s.mannschaft1 || ''} vs ${s.mannschaft2 || ''}`.trim(),
+                        eing: '',
+                        ausg: `${s.tore1 ?? ''} : ${s.tore2 ?? ''}`.trim(),
+                        aktiv: s.gespielt === "1" ? "1" : "0"
+                    }));
+                    result.push({ title: "Spiele", rows });
+                }
+                if (Array.isArray(data.tabelle) && data.tabelle.length > 0) {
+                    const rows = data.tabelle.map(t => ({
+                        platz: String(t.platz || '').trim(),
+                        starter: String(t.name || '').trim(),
+                        eing: String(t.punkte || '').trim(),
+                        ausg: `${t.tore1 ?? ''}:${t.tore2 ?? ''} (${t.punkte ?? ''}P)`,
+                        aktiv: t.spielt === "1" ? "1" : "0"
+                    }));
+                    result.push({ title: "Tabelle", rows });
+                }
+                return result.length > 0 ? result : null;
+            }
+
+            return null;
+        } catch (e) {
+            return null;
+        }
     }
 
     function parseHTML(html) {
@@ -290,23 +347,89 @@
         const h2s = doc.querySelectorAll('h2');
         h2s.forEach((h2) => {
             const txt = h2.textContent.trim();
-            if (!txt.toLowerCase().startsWith('disziplin')) return;
+            if (!txt) return;
+            if (txt.toLowerCase() === 'menü' || txt.toLowerCase() === 'menu') return;
+
             let el = h2.nextElementSibling;
             while (el && el.tagName !== 'TABLE') el = el.nextElementSibling;
             if (!el) return;
             const rows = Array.from(el.querySelectorAll('tbody tr')).map(tr => {
                 const cells = tr.querySelectorAll('td');
-                if (cells.length < 5) return null;
+                if (cells.length < 4) return null;
+
+                if (cells.length >= 5) {
+                    return {
+                        platz: cells[COL_PLATZ].textContent.trim(),
+                        starter: cells[COL_STARTER].textContent.trim(),
+                        eing: cells[COL_EING].textContent.trim(),
+                        ausg: cells[COL_AUSG].textContent.trim(),
+                        aktiv: tr.classList.contains('live') || tr.classList.contains('aktiv') ? "1" : "0"
+                    };
+                }
+
                 return {
-                    platz: cells[COL_PLATZ].textContent.trim(),
-                    starter: cells[COL_STARTER].textContent.trim(),
-                    eing: cells[COL_EING].textContent.trim(),
-                    ausg: cells[COL_AUSG].textContent.trim()
+                    platz: cells[0].textContent.trim(),
+                    starter: `${cells[1].textContent.trim()} vs ${cells[2].textContent.trim()}`,
+                    eing: '',
+                    ausg: cells[3].textContent.trim(),
+                    aktiv: tr.classList.contains('live') || tr.classList.contains('aktiv') ? "1" : "0"
                 };
             }).filter(Boolean);
-            result.push({ title: txt, rows });
+            if (rows.length > 0) {
+                result.push({ title: txt, rows });
+            }
         });
         return result;
+    }
+
+    async function fetchData(sourceUrl) {
+        let targetUrl = sourceUrl.trim();
+
+        let apiUrl = null;
+        if (targetUrl.includes('ergebnisse.hallenradsport-daum.de') && !targetUrl.includes('/api/')) {
+            apiUrl = targetUrl.replace('ergebnisse.hallenradsport-daum.de/', 'ergebnisse.hallenradsport-daum.de/api/');
+        }
+
+        if (apiUrl) {
+            try {
+                const apiResponse = await gmFetch(apiUrl);
+                const parsed = parseJSON(apiResponse);
+                if (parsed && parsed.length > 0) {
+                    return parsed;
+                }
+            } catch (e) {
+                // fallback
+            }
+        }
+
+        const responseText = await gmFetch(targetUrl);
+
+        const parsedJSON = parseJSON(responseText);
+        if (parsedJSON && parsedJSON.length > 0) {
+            return parsedJSON;
+        }
+
+        const apiMatch = responseText.match(/fetch\(["'](\/api\/[^"']+)["']\)/i);
+        if (apiMatch && apiMatch[1]) {
+            try {
+                const relativeApiUrl = apiMatch[1].split('?')[0];
+                const fullApiUrl = new URL(relativeApiUrl, targetUrl).href;
+                const apiResponse = await gmFetch(fullApiUrl);
+                const parsed = parseJSON(apiResponse);
+                if (parsed && parsed.length > 0) {
+                    return parsed;
+                }
+            } catch (e) {
+                // fallback
+            }
+        }
+
+        const parsedHTML = parseHTML(responseText);
+        if (parsedHTML && parsedHTML.length > 0) {
+            return parsedHTML;
+        }
+
+        throw new Error('Keine gültigen Tabellendaten gefunden.');
     }
 
     /* --- Overlay erstellen --- */
@@ -333,13 +456,12 @@
     `;
         document.body.appendChild(root);
 
-        // Apply initial dropdown visibility
         const header = root.querySelector('#hr_header');
         header.style.display = SHOW_DROPDOWNS ? 'flex' : 'none';
 
         return {
             root,
-            header: root.querySelector('#hr_header'), // Header für Breiten/Höhenberechnung
+            header: root.querySelector('#hr_header'),
             selTable: root.querySelector('#hr_table'),
             selCount: root.querySelector('#hr_count'),
             content: root.querySelector('#hr_content'),
@@ -357,8 +479,18 @@
     }
 
     function loadState() {
-        try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; }
+        try {
+            const s = JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+            if (s.sourceUrl && (s.sourceUrl.includes('index.php/live/live-kunstradint') || s.sourceUrl.includes('www.hallenradsport-daum.de'))) {
+                s.sourceUrl = DEFAULT_SOURCE_URL;
+                saveState(s);
+            }
+            return s;
+        } catch {
+            return {};
+        }
     }
+
     function saveState(s) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
     }
@@ -457,8 +589,7 @@
             try { handle.releasePointerCapture(ev.pointerId); } catch {}
             if (onEnd) onEnd();
 
-            // Nach Resize Auto-Anpassung aufrufen
-            if (typeof ui !== 'undefined') {
+            if (typeof ui !== 'undefined' && ui) {
                 autoWidth(ui);
                 autoHeight(ui);
             }
@@ -695,19 +826,18 @@
     /* --- Inhalt / Anzeige --- */
 
     function autoWidth(ui) {
-        if (!ui.content) return;
+        if (!ui || !ui.content) return;
 
         const temp = document.createElement('div');
         temp.style.position = 'absolute';
         temp.style.visibility = 'hidden';
-        temp.style.whiteSpace = 'pre'; // must match display mode
+        temp.style.whiteSpace = 'pre';
         temp.style.fontSize = window.getComputedStyle(ui.root).fontSize;
         temp.style.fontFamily = window.getComputedStyle(ui.root).fontFamily;
         temp.style.fontWeight = window.getComputedStyle(ui.root).fontWeight;
         temp.style.lineHeight = window.getComputedStyle(ui.root).lineHeight;
         document.body.appendChild(temp);
 
-        // Use textContent and split on newline (render now uses textContent with \n)
         const lines = (ui.content.textContent || '').split('\n').map(line => line.replace(/<\/?[^>]+>/g, '').trim());
 
         let maxWidth = 0;
@@ -717,14 +847,13 @@
             if (w > maxWidth) maxWidth = w;
         }
 
-        // Width of dropdowns (header)
         let dropWidth = 0;
         if (ui.header) {
             const selects = ui.header.querySelectorAll('select');
             selects.forEach(s => {
                 dropWidth += s.offsetWidth;
             });
-            dropWidth += (selects.length - 1) * 5; // spacing between dropdowns
+            dropWidth += (selects.length - 1) * 5;
         }
 
         ui.root.style.width = Math.max(maxWidth + 40, dropWidth + 20) + 'px';
@@ -733,7 +862,7 @@
     }
 
     function autoHeight(ui) {
-        if (!ui.content) return;
+        if (!ui || !ui.content) return;
 
         const rootStyle = window.getComputedStyle(ui.root);
         const headerHeight = ui.header ? ui.header.getBoundingClientRect().height : 0;
@@ -748,7 +877,6 @@
         const newHeight = Math.max(48, Math.ceil(headerHeight + contentHeight + paddingTop + paddingBottom + borderTop + borderBottom + handleReserve));
         ui.root.style.height = newHeight + 'px';
 
-        // Optional: Overlay scrollbar verhindern
         ui.content.style.overflow = 'hidden';
     }
 
@@ -758,6 +886,9 @@
             return !UPCOMING_STARTER_EXCLUSIONS.includes(r.starter) && !UPCOMING_STARTER_EXCLUSIONS.includes(`${r.starter}|${r.eing}`);
         });
         if (!unfinishedRows.length) return null;
+
+        const activeStarter = unfinishedRows.find(r => r.aktiv === "1" || r.aktiv === 1);
+        if (activeStarter) return activeStarter;
 
         if (!state.nextStarterByPoints) {
             return unfinishedRows[0];
@@ -970,12 +1101,10 @@
             ui.selCount.value = String(visibleCount);
         }
 
-        // Determine longest starter and points strings
         const fallbackStarterName = 'nicht verfuegbar';
         const maxStarterLen = Math.max(...rows.map(r => r.starter.length), fallbackStarterName.length);
         const maxPointsLen = Math.max(...rows.map(r => r.ausg.length), 0);
 
-        // Pad everything for alignment
         const lines = rows.map(r => {
             const platz = r.platz.padStart(2, ' ');
             const starter = r.starter.padEnd(maxStarterLen, ' ');
@@ -1003,143 +1132,14 @@
 
     /* --- Hauptlogik --- */
 
-    const state = loadState();
-    state.sourceUrl = (state.sourceUrl || DEFAULT_SOURCE_URL).trim() || DEFAULT_SOURCE_URL;
-    state.nextStarterByPoints = state.nextStarterByPoints ?? true;
-    state.timerEnabled = state.timerEnabled ?? false;
-    state.timerDingEnabled = state.timerDingEnabled ?? true;
-    state.timerAutoFit = state.timerAutoFit ?? true;
-    state.timerSeconds = resolveTimerSeconds(state.timerSeconds)
-        ?? parseTimerDurationInput(state.timerDuration)
-        ?? (Number.isFinite(parseInt(state.timerMinutes, 10)) ? Math.max(1, parseInt(state.timerMinutes, 10) * 60) : null)
-        ?? DEFAULT_TIMER_SECONDS;
-    state.timerDuration = formatTimerTime(state.timerSeconds);
-    delete state.timerMinutes;
-    SOURCE_URL = (state.sourceUrl || DEFAULT_SOURCE_URL).trim() || DEFAULT_SOURCE_URL;
-    const ui = createOverlay();
-    ui.root.style.fontSize = BASE_FONT_SIZE + 'px';
-    rankColoringEnabled = state.rankColoringEnabled ?? true;
-    highlightedSeedCount = Math.max(0, Math.min(10, parseInt(state.highlightedSeedCount ?? DEFAULT_HIGHLIGHTED_SEED_COUNT, 10) || DEFAULT_HIGHLIGHTED_SEED_COUNT));
-
-    // --- initialize overlay transparency ---
-    state.alpha = state.alpha ?? DEFAULT_ALPHA; // default alpha if not stored
-    applyOverlayAlpha(ui, state.alpha);
-
-    makeDraggable(ui.root, () => {
-        const rect = ui.root.getBoundingClientRect();
-        Object.assign(state, { left: rect.left + 'px', top: rect.top + 'px' });
-        saveState(state);
-    }, {
-        shouldBlockDrag: () => isSettingsMenuOpen(ui),
-        ignoreSelectors: ['.hr_menu']
-    });
-    makeResizable(ui.root, ui.resizeHandle, () => {
-        const rect = ui.root.getBoundingClientRect();
-        Object.assign(state, { width: rect.width + 'px', height: rect.height + 'px', fontSize: ui.root.style.fontSize });
-        saveState(state);
-    }, {
-        onResize: ({ scale, el }) => {
-            el.querySelectorAll('select').forEach(sel => {
-                sel.style.fontSize = (13 * scale) + 'px';
-                sel.style.padding = `${(4 * scale)}px`;
-            });
-        }
-    });
-
-    const selection = {
-        tableIndex: state.tableIndex || 0,
-        countValue: state.countValue || 3
-    };
-
-    timerUi = createTimerOverlay();
-    timerState = {
-        totalSeconds: state.timerSeconds,
-        remainingSeconds: state.timerSeconds,
-        running: false,
-        interval: null,
-        alerted: false
-    };
-    timerUi.root.style.fontSize = BASE_FONT_SIZE + 'px';
-    if (!state.timerAutoFit && state.timerWidth) timerUi.root.style.width = state.timerWidth;
-    if (state.timerLeft && state.timerTop) {
-        timerUi.root.style.left = state.timerLeft;
-        timerUi.root.style.top = state.timerTop;
-        timerUi.root.style.right = 'auto';
-        timerUi.root.style.bottom = 'auto';
-    }
-    timerUi.root.style.fontSize = state.timerFontSize || '13px';
-    delete state.timerHeight;
-    if (state.timerAutoFit) {
-        delete state.timerWidth;
-    }
-
-    makeDraggable(timerUi.root, () => {
-        const rect = timerUi.root.getBoundingClientRect();
-        Object.assign(state, { timerLeft: rect.left + 'px', timerTop: rect.top + 'px' });
-        saveState(state);
-    }, {
-        shouldBlockDrag: () => isTimerMenuOpen(timerUi),
-        ignoreSelectors: ['.hr_timer_menu']
-    });
-    makeResizable(timerUi.root, timerUi.resizeHandle, () => {
-        const rect = timerUi.root.getBoundingClientRect();
-        Object.assign(state, {
-            timerFontSize: timerUi.root.style.fontSize
-        });
-        state.timerAutoFit = true;
-        delete state.timerWidth;
-        delete state.timerHeight;
-        saveState(state);
-        timerUi.root.style.width = 'max-content';
-        scheduleTimerHeightSync();
-    }, {
-        onResize: ({ scale, el }) => {
-            const timeEl = el.querySelector('.hr_timer_time');
-            const buttonsEl = el.querySelector('.hr_timer_buttons');
-            const buttonEls = el.querySelectorAll('.hr_timer_buttons button');
-            const bodyEl = el.querySelector('.hr_timer_body');
-
-            if (bodyEl) {
-                bodyEl.style.gap = `${Math.max(3, 6 * scale)}px`;
-            }
-            if (timeEl) {
-                timeEl.style.fontSize = `${28 * scale}px`;
-                timeEl.style.width = `${5.2 * scale}ch`;
-            }
-            if (buttonsEl) {
-                buttonsEl.style.gap = `${Math.max(2, 3 * scale)}px`;
-            }
-            buttonEls.forEach(btn => {
-                const size = Math.max(22, 32 * scale);
-                btn.style.width = `${size}px`;
-                btn.style.height = `${size}px`;
-                btn.style.fontSize = `${Math.max(10, 15 * scale)}px`;
-            });
-            scheduleTimerHeightSync();
-        }
-    });
-
-    syncTimerMenu();
-    updateTimerDisplay();
-    applyTimerVisibility();
-
-    document.addEventListener('fullscreenchange', () => {
-        attachToFullscreen(ui.root);
-        attachToFullscreen(timerUi.root);
-        requestAnimationFrame(() => updateLayout(ui, tables));
-    });
-
-    window.addEventListener('resize', () => {
-        if (ui.root.style.display === 'none' && timerUi.root.style.display === 'none') return;
-        requestAnimationFrame(() => updateLayout(ui, tables));
-    });
+    let state, selection;
+    let overlayVisible = true;
+    let overlayHovered = false;
 
     async function refresh() {
         try {
-            const html = await gmFetchHTML();
-            tables = parseHTML(html);
+            tables = await fetchData(SOURCE_URL);
 
-            // --- Tabelle Dropdown ---
             ui.selTable.innerHTML = '';
             tables.forEach((t, i) => {
                 const o = document.createElement('option');
@@ -1148,11 +1148,15 @@
                 ui.selTable.appendChild(o);
             });
 
-            // --- Auswahl aus State setzen ---
-            if (selection.tableIndex < tables.length) ui.selTable.value = selection.tableIndex;
+            if (selection.tableIndex < tables.length) {
+                ui.selTable.value = selection.tableIndex;
+            } else {
+                selection.tableIndex = 0;
+                ui.selTable.value = 0;
+            }
+
             syncCountOptions(ui, tables, selection.countValue);
 
-            // --- Eventhandler für Dropdowns ---
             ui.selTable.onchange = () => {
                 selection.tableIndex = parseInt(ui.selTable.value, 10);
                 state.tableIndex = selection.tableIndex;
@@ -1168,7 +1172,6 @@
                 updateLayout(ui, tables);
             };
 
-            // --- Initiales Rendern + Auto-Größe ---
             requestAnimationFrame(() => {
                 updateLayout(ui, tables);
             });
@@ -1178,315 +1181,424 @@
         }
     }
 
-    refresh();
-    setInterval(refresh, REFRESH_INTERVAL);
-
-    // --- Keyboard Controls (overlay hovered only) ---
-    window.addEventListener('keydown', (ev) => {
-        if (!overlayVisible || !overlayHovered || !ui || !ui.root) return;
-        switch (ev.key) {
-            case '#': {
-                SHOW_DROPDOWNS = !SHOW_DROPDOWNS;
-                applyDisplayMode(ui);
-                updateLayout(ui, tables);
-                break;
-            }
-
-            case '+': { // more opaque
-                state.alpha = Math.min((state.alpha ?? 0.8) + 0.05, 1);
-                applyOverlayAlpha(ui, state.alpha);
-                syncSettingsMenu(ui, state);
-                saveState(state);
-                break;
-            }
-
-            case '-': { // more transparent
-                state.alpha = Math.max((state.alpha ?? 0.8) - 0.05, 0);
-                applyOverlayAlpha(ui, state.alpha);
-                syncSettingsMenu(ui, state);
-                saveState(state);
-                break;
-            }
-
-            case 'F1': { // open const url
-                ev.preventDefault(); // stop browser help
-                window.open(SOURCE_URL, '_blank');
-                break;
-            }
-
-            case 'F2': {
-                ev.preventDefault();
-                showUpcomingStarter = !showUpcomingStarter;
-                applyDisplayMode(ui);
-                updateLayout(ui, tables);
-                break;
-            }
+    function init() {
+        if (!document.body) {
+            window.addEventListener('DOMContentLoaded', init, { once: true });
+            return;
         }
-    });
 
-    // --- Video Controls ---
-    window.addEventListener('keydown', (ev) => {
-        if (isTypingTarget(ev.target)) return;
-        if (overlayVisible && overlayHovered) return;
+        state = loadState();
+        state.sourceUrl = (state.sourceUrl || DEFAULT_SOURCE_URL).trim() || DEFAULT_SOURCE_URL;
+        state.nextStarterByPoints = state.nextStarterByPoints ?? true;
+        state.timerEnabled = state.timerEnabled ?? false;
+        state.timerDingEnabled = state.timerDingEnabled ?? true;
+        state.timerAutoFit = state.timerAutoFit ?? true;
+        state.timerSeconds = resolveTimerSeconds(state.timerSeconds)
+            ?? parseTimerDurationInput(state.timerDuration)
+            ?? (Number.isFinite(parseInt(state.timerMinutes, 10)) ? Math.max(1, parseInt(state.timerMinutes, 10) * 60) : null)
+            ?? DEFAULT_TIMER_SECONDS;
+        state.timerDuration = formatTimerTime(state.timerSeconds);
+        delete state.timerMinutes;
+        SOURCE_URL = (state.sourceUrl || DEFAULT_SOURCE_URL).trim() || DEFAULT_SOURCE_URL;
 
-        const video = getActiveVideo();
-        if (!video) return;
+        ui = createOverlay();
+        ui.root.style.fontSize = BASE_FONT_SIZE + 'px';
+        rankColoringEnabled = state.rankColoringEnabled ?? true;
+        highlightedSeedCount = Math.max(0, Math.min(10, parseInt(state.highlightedSeedCount ?? DEFAULT_HIGHLIGHTED_SEED_COUNT, 10) || DEFAULT_HIGHLIGHTED_SEED_COUNT));
 
-        switch (ev.key) {
-            case ' ':
-            case 'Spacebar': {
-                ev.preventDefault();
-                ev.stopPropagation();
-                ev.stopImmediatePropagation?.();
-                if (video.paused) {
-                    video.play?.().catch(() => {});
-                } else {
-                    video.pause?.();
-                }
-                break;
-            }
-
-            case 'ArrowLeft': {
-                ev.preventDefault();
-                ev.stopPropagation();
-                ev.stopImmediatePropagation?.();
-                video.currentTime = Math.max(0, (video.currentTime || 0) - 5);
-                break;
-            }
-
-            case 'ArrowRight': {
-                ev.preventDefault();
-                ev.stopPropagation();
-                ev.stopImmediatePropagation?.();
-                const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
-                video.currentTime = Math.min(duration, (video.currentTime || 0) + 5);
-                break;
-            }
-
-            case 'm':
-            case 'M': {
-                ev.preventDefault();
-                ev.stopPropagation();
-                ev.stopImmediatePropagation?.();
-                video.muted = !video.muted;
-                break;
-            }
-        }
-    }, true);
-
-
-    /* --- Mouse Controls (replace # / + / - shortcuts) --- */
-    let overlayVisible = true;
-    let overlayHovered = false;
-
-    ui.root.addEventListener('mouseenter', () => {
-        overlayHovered = true;
-    });
-
-    ui.root.addEventListener('mouseleave', () => {
-        overlayHovered = false;
-    });
-
-    ui.root.addEventListener('contextmenu', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        showSettingsMenu(ui, ev, state);
-    });
-
-    ui.menu.addEventListener('mousedown', (ev) => {
-        ev.stopPropagation();
-    });
-
-    ui.menu.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-    });
-
-    ui.menuRankColoring.addEventListener('change', () => {
-        rankColoringEnabled = ui.menuRankColoring.checked;
-        state.rankColoringEnabled = rankColoringEnabled;
-        saveState(state);
-        updateLayout(ui, tables);
-    });
-
-    ui.menuHighlightCount.addEventListener('input', () => {
-        let nextValue = parseInt(ui.menuHighlightCount.value, 10);
-        if (!Number.isFinite(nextValue)) nextValue = DEFAULT_HIGHLIGHTED_SEED_COUNT;
-        highlightedSeedCount = Math.max(0, Math.min(10, nextValue));
-        ui.menuHighlightCount.value = String(highlightedSeedCount);
-        state.highlightedSeedCount = highlightedSeedCount;
-        saveState(state);
-        updateLayout(ui, tables);
-    });
-
-    ui.menuAlpha.addEventListener('input', () => {
-        state.alpha = Math.max(0, Math.min(1, parseInt(ui.menuAlpha.value, 10) / 100));
-        ui.menuAlphaValue.textContent = `${ui.menuAlpha.value}%`;
+        state.alpha = state.alpha ?? DEFAULT_ALPHA;
         applyOverlayAlpha(ui, state.alpha);
-        saveState(state);
-    });
 
-    ui.menuSourceUrl.addEventListener('change', () => {
-        const nextUrl = ui.menuSourceUrl.value.trim() || DEFAULT_SOURCE_URL;
-        SOURCE_URL = nextUrl;
-        state.sourceUrl = nextUrl;
-        saveState(state);
-        refresh();
-    });
+        makeDraggable(ui.root, () => {
+            const rect = ui.root.getBoundingClientRect();
+            Object.assign(state, { left: rect.left + 'px', top: rect.top + 'px' });
+            saveState(state);
+        }, {
+            shouldBlockDrag: () => isSettingsMenuOpen(ui),
+            ignoreSelectors: ['.hr_menu']
+        });
+        makeResizable(ui.root, ui.resizeHandle, () => {
+            const rect = ui.root.getBoundingClientRect();
+            Object.assign(state, { width: rect.width + 'px', height: rect.height + 'px', fontSize: ui.root.style.fontSize });
+            saveState(state);
+        }, {
+            onResize: ({ scale, el }) => {
+                el.querySelectorAll('select').forEach(sel => {
+                    sel.style.fontSize = (13 * scale) + 'px';
+                    sel.style.padding = `${(4 * scale)}px`;
+                });
+            }
+        });
 
-    ui.menuNextByPoints.addEventListener('change', () => {
-        state.nextStarterByPoints = ui.menuNextByPoints.checked;
-        saveState(state);
-        updateLayout(ui, tables);
-    });
+        selection = {
+            tableIndex: state.tableIndex || 0,
+            countValue: state.countValue || 3
+        };
 
-    ui.menuTimerEnabled.addEventListener('change', () => {
-        state.timerEnabled = ui.menuTimerEnabled.checked;
-        saveState(state);
-        applyTimerVisibility();
-    });
-
-    ui.menuReset.addEventListener('click', () => {
-        rankColoringEnabled = true;
-        highlightedSeedCount = DEFAULT_HIGHLIGHTED_SEED_COUNT;
-        state.rankColoringEnabled = true;
-        state.highlightedSeedCount = DEFAULT_HIGHLIGHTED_SEED_COUNT;
-        state.alpha = DEFAULT_ALPHA;
-        state.sourceUrl = DEFAULT_SOURCE_URL;
-        state.nextStarterByPoints = true;
-        SOURCE_URL = DEFAULT_SOURCE_URL;
-        state.timerEnabled = false;
-        state.timerSeconds = DEFAULT_TIMER_SECONDS;
-        state.timerDuration = formatTimerTime(DEFAULT_TIMER_SECONDS);
-        state.timerDingEnabled = true;
-        state.timerAutoFit = true;
+        timerUi = createTimerOverlay();
+        timerState = {
+            totalSeconds: state.timerSeconds,
+            remainingSeconds: state.timerSeconds,
+            running: false,
+            interval: null,
+            alerted: false
+        };
+        timerUi.root.style.fontSize = BASE_FONT_SIZE + 'px';
+        if (!state.timerAutoFit && state.timerWidth) timerUi.root.style.width = state.timerWidth;
+        if (state.timerLeft && state.timerTop) {
+            timerUi.root.style.left = state.timerLeft;
+            timerUi.root.style.top = state.timerTop;
+            timerUi.root.style.right = 'auto';
+            timerUi.root.style.bottom = 'auto';
+        }
+        timerUi.root.style.fontSize = state.timerFontSize || '13px';
         delete state.timerHeight;
-        delete state.timerWidth;
-        applyOverlayAlpha(ui, state.alpha);
-        syncSettingsMenu(ui, state);
-        saveState(state);
-        updateLayout(ui, tables);
-        setTimerDuration(DEFAULT_TIMER_SECONDS);
-        state.timerDingEnabled = true;
+        if (state.timerAutoFit) {
+            delete state.timerWidth;
+        }
+
+        makeDraggable(timerUi.root, () => {
+            const rect = timerUi.root.getBoundingClientRect();
+            Object.assign(state, { timerLeft: rect.left + 'px', timerTop: rect.top + 'px' });
+            saveState(state);
+        }, {
+            shouldBlockDrag: () => isTimerMenuOpen(timerUi),
+            ignoreSelectors: ['.hr_timer_menu']
+        });
+        makeResizable(timerUi.root, timerUi.resizeHandle, () => {
+            const rect = timerUi.root.getBoundingClientRect();
+            Object.assign(state, {
+                timerFontSize: timerUi.root.style.fontSize
+            });
+            state.timerAutoFit = true;
+            delete state.timerWidth;
+            delete state.timerHeight;
+            saveState(state);
+            timerUi.root.style.width = 'max-content';
+            scheduleTimerHeightSync();
+        }, {
+            onResize: ({ scale, el }) => {
+                const timeEl = el.querySelector('.hr_timer_time');
+                const buttonsEl = el.querySelector('.hr_timer_buttons');
+                const buttonEls = el.querySelectorAll('.hr_timer_buttons button');
+                const bodyEl = el.querySelector('.hr_timer_body');
+
+                if (bodyEl) {
+                    bodyEl.style.gap = `${Math.max(3, 6 * scale)}px`;
+                }
+                if (timeEl) {
+                    timeEl.style.fontSize = `${28 * scale}px`;
+                    timeEl.style.width = `${5.2 * scale}ch`;
+                }
+                if (buttonsEl) {
+                    buttonsEl.style.gap = `${Math.max(2, 3 * scale)}px`;
+                }
+                buttonEls.forEach(btn => {
+                    const size = Math.max(22, 32 * scale);
+                    btn.style.width = `${size}px`;
+                    btn.style.height = `${size}px`;
+                    btn.style.fontSize = `${Math.max(10, 15 * scale)}px`;
+                });
+                scheduleTimerHeightSync();
+            }
+        });
+
         syncTimerMenu();
+        updateTimerDisplay();
         applyTimerVisibility();
-    });
 
-    timerUi.root.addEventListener('contextmenu', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        hideSettingsMenu(ui);
-        showTimerMenu(timerUi, ev);
-    });
+        document.addEventListener('fullscreenchange', () => {
+            attachToFullscreen(ui.root);
+            attachToFullscreen(timerUi.root);
+            requestAnimationFrame(() => updateLayout(ui, tables));
+        });
 
-    timerUi.menu.addEventListener('mousedown', (ev) => {
-        ev.stopPropagation();
-    });
+        window.addEventListener('resize', () => {
+            if (ui.root.style.display === 'none' && timerUi.root.style.display === 'none') return;
+            requestAnimationFrame(() => updateLayout(ui, tables));
+        });
 
-    timerUi.menu.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-    });
+        refresh();
+        setInterval(refresh, REFRESH_INTERVAL);
 
-    timerUi.toggle.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        if (timerState.remainingSeconds <= 0) {
+        // --- Keyboard Controls ---
+        window.addEventListener('keydown', (ev) => {
+            if (!overlayVisible || !overlayHovered || !ui || !ui.root) return;
+            switch (ev.key) {
+                case '#': {
+                    SHOW_DROPDOWNS = !SHOW_DROPDOWNS;
+                    applyDisplayMode(ui);
+                    updateLayout(ui, tables);
+                    break;
+                }
+
+                case '+': {
+                    state.alpha = Math.min((state.alpha ?? 0.8) + 0.05, 1);
+                    applyOverlayAlpha(ui, state.alpha);
+                    syncSettingsMenu(ui, state);
+                    saveState(state);
+                    break;
+                }
+
+                case '-': {
+                    state.alpha = Math.max((state.alpha ?? 0.8) - 0.05, 0);
+                    applyOverlayAlpha(ui, state.alpha);
+                    syncSettingsMenu(ui, state);
+                    saveState(state);
+                    break;
+                }
+
+                case 'F1': {
+                    ev.preventDefault();
+                    window.open(SOURCE_URL, '_blank');
+                    break;
+                }
+
+                case 'F2': {
+                    ev.preventDefault();
+                    showUpcomingStarter = !showUpcomingStarter;
+                    applyDisplayMode(ui);
+                    updateLayout(ui, tables);
+                    break;
+                }
+            }
+        });
+
+        // --- Video Controls ---
+        window.addEventListener('keydown', (ev) => {
+            if (isTypingTarget(ev.target)) return;
+            if (overlayVisible && overlayHovered) return;
+
+            const video = getActiveVideo();
+            if (!video) return;
+
+            switch (ev.key) {
+                case ' ':
+                case 'Spacebar': {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation?.();
+                    if (video.paused) {
+                        video.play?.().catch(() => {});
+                    } else {
+                        video.pause?.();
+                    }
+                    break;
+                }
+
+                case 'ArrowLeft': {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation?.();
+                    video.currentTime = Math.max(0, (video.currentTime || 0) - 5);
+                    break;
+                }
+
+                case 'ArrowRight': {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation?.();
+                    const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
+                    video.currentTime = Math.min(duration, (video.currentTime || 0) + 5);
+                    break;
+                }
+
+                case 'm':
+                case 'M': {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation?.();
+                    video.muted = !video.muted;
+                    break;
+                }
+            }
+        }, true);
+
+        /* --- Mouse Controls --- */
+        ui.root.addEventListener('mouseenter', () => { overlayHovered = true; });
+        ui.root.addEventListener('mouseleave', () => { overlayHovered = false; });
+
+        ui.root.addEventListener('contextmenu', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            showSettingsMenu(ui, ev, state);
+        });
+
+        ui.menu.addEventListener('mousedown', (ev) => { ev.stopPropagation(); });
+        ui.menu.addEventListener('click', (ev) => { ev.stopPropagation(); });
+
+        ui.menuRankColoring.addEventListener('change', () => {
+            rankColoringEnabled = ui.menuRankColoring.checked;
+            state.rankColoringEnabled = rankColoringEnabled;
+            saveState(state);
+            updateLayout(ui, tables);
+        });
+
+        ui.menuHighlightCount.addEventListener('input', () => {
+            let nextValue = parseInt(ui.menuHighlightCount.value, 10);
+            if (!Number.isFinite(nextValue)) nextValue = DEFAULT_HIGHLIGHTED_SEED_COUNT;
+            highlightedSeedCount = Math.max(0, Math.min(10, nextValue));
+            ui.menuHighlightCount.value = String(highlightedSeedCount);
+            state.highlightedSeedCount = highlightedSeedCount;
+            saveState(state);
+            updateLayout(ui, tables);
+        });
+
+        ui.menuAlpha.addEventListener('input', () => {
+            state.alpha = Math.max(0, Math.min(1, parseInt(ui.menuAlpha.value, 10) / 100));
+            ui.menuAlphaValue.textContent = `${ui.menuAlpha.value}%`;
+            applyOverlayAlpha(ui, state.alpha);
+            saveState(state);
+        });
+
+        ui.menuSourceUrl.addEventListener('change', () => {
+            const nextUrl = ui.menuSourceUrl.value.trim() || DEFAULT_SOURCE_URL;
+            SOURCE_URL = nextUrl;
+            state.sourceUrl = nextUrl;
+            saveState(state);
+            refresh();
+        });
+
+        ui.menuNextByPoints.addEventListener('change', () => {
+            state.nextStarterByPoints = ui.menuNextByPoints.checked;
+            saveState(state);
+            updateLayout(ui, tables);
+        });
+
+        ui.menuTimerEnabled.addEventListener('change', () => {
+            state.timerEnabled = ui.menuTimerEnabled.checked;
+            saveState(state);
+            applyTimerVisibility();
+        });
+
+        ui.menuReset.addEventListener('click', () => {
+            rankColoringEnabled = true;
+            highlightedSeedCount = DEFAULT_HIGHLIGHTED_SEED_COUNT;
+            state.rankColoringEnabled = true;
+            state.highlightedSeedCount = DEFAULT_HIGHLIGHTED_SEED_COUNT;
+            state.alpha = DEFAULT_ALPHA;
+            state.sourceUrl = DEFAULT_SOURCE_URL;
+            state.nextStarterByPoints = true;
+            SOURCE_URL = DEFAULT_SOURCE_URL;
+            state.timerEnabled = false;
+            state.timerSeconds = DEFAULT_TIMER_SECONDS;
+            state.timerDuration = formatTimerTime(DEFAULT_TIMER_SECONDS);
+            state.timerDingEnabled = true;
+            state.timerAutoFit = true;
+            delete state.timerHeight;
+            delete state.timerWidth;
+            applyOverlayAlpha(ui, state.alpha);
+            syncSettingsMenu(ui, state);
+            saveState(state);
+            updateLayout(ui, tables);
+            setTimerDuration(DEFAULT_TIMER_SECONDS);
+            state.timerDingEnabled = true;
+            syncTimerMenu();
+            applyTimerVisibility();
+        });
+
+        timerUi.root.addEventListener('contextmenu', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            hideSettingsMenu(ui);
+            showTimerMenu(timerUi, ev);
+        });
+
+        timerUi.menu.addEventListener('mousedown', (ev) => { ev.stopPropagation(); });
+        timerUi.menu.addEventListener('click', (ev) => { ev.stopPropagation(); });
+
+        timerUi.toggle.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (timerState.remainingSeconds <= 0) resetTimer();
+            if (timerState.running) pauseTimer(); else startTimer();
+        });
+
+        timerUi.reset.addEventListener('click', (ev) => {
+            ev.stopPropagation();
             resetTimer();
+        });
+
+        timerUi.menuDuration.addEventListener('change', () => {
+            setTimerDuration(timerUi.menuDuration.value);
+        });
+
+        timerUi.menuDing.addEventListener('change', () => {
+            state.timerDingEnabled = timerUi.menuDing.checked;
+            saveState(state);
+        });
+
+        document.addEventListener('mousedown', (ev) => {
+            if (ui.root.contains(ev.target) || timerUi.root.contains(ev.target)) return;
+            hideSettingsMenu(ui);
+            hideTimerMenu(timerUi);
+        });
+
+        ui.root.addEventListener('mousedown', (ev) => {
+            if (ev.button !== 1) return;
+            ev.preventDefault();
+        });
+
+        window.addEventListener('mousedown', (ev) => {
+            if (ev.button !== 1) return;
+            if (ui.root.contains(ev.target)) return;
+            ev.preventDefault();
+        }, true);
+
+        function toggleOverlay() {
+            overlayVisible = !overlayVisible;
+            ui.root.style.display = overlayVisible ? 'flex' : 'none';
+            if (!overlayVisible) overlayHovered = false;
         }
-        if (timerState.running) {
-            pauseTimer();
-        } else {
-            startTimer();
-        }
-    });
 
-    timerUi.reset.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        resetTimer();
-    });
+        ui.root.addEventListener('auxclick', (ev) => {
+            if (ev.button !== 1) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            ev.stopImmediatePropagation?.();
+            cycleDisplayMode(ui);
+            updateLayout(ui, tables);
+        });
 
-    timerUi.menuDuration.addEventListener('change', () => {
-        setTimerDuration(timerUi.menuDuration.value);
-    });
+        window.addEventListener('auxclick', (ev) => {
+            if (ev.button !== 1) return;
+            if (ui.root.contains(ev.target)) return;
+            ev.preventDefault();
+            toggleOverlay();
+        });
 
-    timerUi.menuDing.addEventListener('change', () => {
-        state.timerDingEnabled = timerUi.menuDing.checked;
-        saveState(state);
-    });
+        window.addEventListener('wheel', (ev) => {
+            if (!overlayVisible || !overlayHovered || !ui || !ui.selTable || !ui.selCount) return;
 
-    document.addEventListener('mousedown', (ev) => {
-        if (ui.root.contains(ev.target) || timerUi.root.contains(ev.target)) return;
-        hideSettingsMenu(ui);
-        hideTimerMenu(timerUi);
-    });
+            ev.preventDefault();
 
-    ui.root.addEventListener('mousedown', (ev) => {
-        if (ev.button !== 1) return;
-        ev.preventDefault();
-    });
+            if (Math.abs(ev.deltaY) > Math.abs(ev.deltaX)) {
+                let current = parseInt(ui.selCount.value, 10) || 3;
+                const maxRows = ui.selCount.options.length || 1;
+                if (ev.deltaY < 0) current = Math.min(current + 1, maxRows);
+                if (ev.deltaY > 0) current = Math.max(current - 1, 1);
+                ui.selCount.value = current;
+                selection.countValue = current;
+                state.countValue = current;
+                saveState(state);
+                updateLayout(ui, tables);
+                return;
+            }
 
-    window.addEventListener('mousedown', (ev) => {
-        if (ev.button !== 1) return;
-        if (ui.root.contains(ev.target)) return;
-        ev.preventDefault();
-    }, true);
-
-    function toggleOverlay() {
-        overlayVisible = !overlayVisible;
-        ui.root.style.display = overlayVisible ? 'flex' : 'none';
-        if (!overlayVisible) overlayHovered = false;
+            if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) {
+                let idx = parseInt(ui.selTable.value, 10) || 0;
+                const total = ui.selTable.options.length;
+                if (ev.deltaX < 0) idx = (idx - 1 + total) % total;
+                if (ev.deltaX > 0) idx = (idx + 1) % total;
+                ui.selTable.value = idx;
+                selection.tableIndex = idx;
+                state.tableIndex = idx;
+                saveState(state);
+                syncCountOptions(ui, tables, selection.countValue);
+                updateLayout(ui, tables);
+                return;
+            }
+        }, { passive: false });
     }
 
-    // Handle middle-click directly on the overlay to cycle display mode
-    ui.root.addEventListener('auxclick', (ev) => {
-        if (ev.button !== 1) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        ev.stopImmediatePropagation?.();
-        cycleDisplayMode(ui);
-        updateLayout(ui, tables);
-    });
-
-    // Handle middle-click outside the overlay to toggle overlay visibility
-    window.addEventListener('auxclick', (ev) => {
-        if (ev.button !== 1) return;
-        if (ui.root.contains(ev.target)) return;
-        ev.preventDefault();
-        toggleOverlay();
-    });
-
-    // Handle mouse wheel actions when overlay is hovered
-    window.addEventListener('wheel', (ev) => {
-        if (!overlayVisible || !overlayHovered || !ui || !ui.selTable || !ui.selCount) return;
-
-        ev.preventDefault();
-
-        // Scroll up/down changes right dropdown (count)
-        if (Math.abs(ev.deltaY) > Math.abs(ev.deltaX)) {
-            let current = parseInt(ui.selCount.value, 10) || 3;
-            const maxRows = ui.selCount.options.length || 1;
-            if (ev.deltaY < 0) current = Math.min(current + 1, maxRows); // scroll up
-            if (ev.deltaY > 0) current = Math.max(current - 1, 1); // scroll down
-            ui.selCount.value = current;
-            selection.countValue = current;
-            state.countValue = current;
-            saveState(state);
-            updateLayout(ui, tables);
-            return;
-        }
-
-        // Scroll left/right cycles through left dropdown (tables)
-        if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) {
-            let idx = parseInt(ui.selTable.value, 10) || 0;
-            const total = ui.selTable.options.length;
-            if (ev.deltaX < 0) idx = (idx - 1 + total) % total; // scroll left
-            if (ev.deltaX > 0) idx = (idx + 1) % total; // scroll right
-            ui.selTable.value = idx;
-            selection.tableIndex = idx;
-            state.tableIndex = idx;
-            saveState(state);
-            syncCountOptions(ui, tables, selection.countValue);
-            updateLayout(ui, tables);
-            return;
-        }
-    }, { passive: false });
-
+    init();
 })();
